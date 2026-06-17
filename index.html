@@ -80,6 +80,21 @@
   .fab { position: fixed; right: 18px; bottom: calc(20px + env(safe-area-inset-bottom)); width: 56px; height: 56px; border-radius: 50%; background: var(--accent); color: #1a1208; border: none; font-size: 26px; line-height: 56px; text-align: center; box-shadow: 0 6px 18px rgba(0,0,0,0.45); touch-action: manipulation; }
 
   .loading { text-align: center; color: var(--muted); font-family: var(--mono); font-size: 13px; padding: 60px 0; }
+
+  .msg-section { margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--card-border); }
+  .msg-section .msg-label { font-family: var(--mono); font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+  .msg-toggle { display: inline-flex; background: #15181b; border: 1px solid var(--card-border); border-radius: 8px; padding: 2px; margin-bottom: 8px; }
+  .msg-toggle button { border: none; background: transparent; color: var(--muted); font-family: var(--mono); font-size: 11.5px; padding: 6px 14px; border-radius: 6px; touch-action: manipulation; }
+  .msg-toggle button.active { background: var(--accent-dim); color: var(--accent); }
+  .msg-preview { width: 100%; background: #15181b; border: 1px solid var(--card-border); color: var(--text); border-radius: 8px; padding: 10px 11px; font-size: 14px; font-family: var(--sans); line-height: 1.5; resize: none; min-height: 40px; overflow: hidden; }
+  .msg-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .msg-actions button { font-family: var(--mono); font-size: 12px; color: var(--accent); background: none; border: 1px solid var(--accent-dim); border-radius: 8px; padding: 8px 12px; touch-action: manipulation; }
+  .msg-actions button.secondary { color: var(--muted); border-color: var(--card-border); }
+  .reminder-hint { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
+
+  .tpl-help { font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.8; margin: 14px 2px 0; }
+  .tpl-help code { color: var(--accent); background: #15181b; border: 1px solid var(--card-border); border-radius: 5px; padding: 1px 6px; }
+  .tpl-intro { font-size: 13px; color: var(--muted); line-height: 1.55; margin: 0 2px 4px; }
 </style>
 </head>
 <body>
@@ -91,6 +106,7 @@
     <div class="tabs">
       <button id="tab-leads" class="active">Leads</button>
       <button id="tab-platforms">Platforms</button>
+      <button id="tab-templates">Templates</button>
     </div>
     <div class="banner" id="save-banner">
       <span>Changes aren't saving right now.</span>
@@ -153,7 +169,23 @@ const DEFAULT_PLATFORMS = [
   { name: 'Greentown Labs', type: 'Network/Community', status: 'Not Started', dateApplied: '', url: 'https://greentownlabs.com/', notes: 'Climatetech hardware startups — many need contract EE/PCB help' }
 ];
 
-let state = { tab: 'leads', leads: [], platforms: [], openId: null, confirmDeleteId: null, confirmReset: false, saveError: false };
+// Message templates. {placeholders} are filled in per lead when you copy.
+const DEFAULT_TEMPLATES = {
+  intro:
+    'Hi {firstName},\n\n' +
+    'I came across {company} and really admire what your team is building. ' +
+    'I’m Caleb Lawson, a freelance electrical/PCB engineer (FAA Part 107 certified). ' +
+    'I help hardware startups with circuit design, PCB layout, and sensor/drone integration — often as overflow or contract support.\n\n' +
+    'If that’s ever useful for {company}, I’d love to connect and share my portfolio. Either way, keep up the great work.\n\n' +
+    'Best,\nCaleb',
+  followup:
+    'Hi {firstName},\n\n' +
+    'Just following up on my note about contract EE/PCB support for {company} — I know things move fast, so no worries if the timing isn’t right. ' +
+    'I’d still love to be a resource if any hardware needs come up down the line.\n\n' +
+    'Best,\nCaleb'
+};
+
+let state = { tab: 'leads', leads: [], platforms: [], templates: { intro: '', followup: '' }, msgTemplate: 'intro', openId: null, confirmDeleteId: null, confirmReset: false, saveError: false };
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 function withIds(arr) { return arr.map(item => Object.assign({ id: uid() }, item)); }
@@ -190,6 +222,131 @@ function selectOptions(options, current) {
   return options.map(o => '<option value="' + esc(o) + '"' + (o === current ? ' selected' : '') + '>' + esc(o) + '</option>').join('');
 }
 
+async function loadTemplates() {
+  try {
+    const res = await window.storage.get('templates', false);
+    if (res && res.value) {
+      const p = JSON.parse(res.value);
+      if (p && typeof p === 'object' && (p.intro || p.followup)) {
+        return { intro: p.intro || DEFAULT_TEMPLATES.intro, followup: p.followup || DEFAULT_TEMPLATES.followup };
+      }
+    }
+    throw new Error('empty');
+  } catch (e) {
+    const t = Object.assign({}, DEFAULT_TEMPLATES);
+    await saveTemplates(t);
+    return t;
+  }
+}
+
+async function saveTemplates(t) {
+  try { await window.storage.set('templates', JSON.stringify(t), false); state.saveError = false; return true; }
+  catch (e) { console.error('Storage save failed', e); state.saveError = true; return false; }
+}
+
+// Replace {placeholders} in a template with a lead's details.
+function fillTemplate(tpl, lead) {
+  const first = ((lead.contactName || '').trim().split(/\s+/)[0]) || 'there';
+  const map = {
+    firstName: first,
+    contactName: (lead.contactName || '').trim() || 'there',
+    company: (lead.company || '').trim() || 'your company',
+    role: (lead.role || '').trim(),
+    source: (lead.source || '').trim(),
+    nextAction: (lead.nextAction || '').trim()
+  };
+  return (tpl || '').replace(/\{(\w+)\}/g, (m, k) => (k in map ? map[k] : m));
+}
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(text); return true; }
+  } catch (e) { /* fall through to legacy path */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch (e) { return false; }
+}
+
+function flashCopied(id) {
+  const el = document.querySelector('.card[data-id="' + id + '"] .copy-flag');
+  if (!el) return;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 1200);
+}
+
+// --- Calendar reminders (.ics) -------------------------------------------
+// Real iPhone notifications without a backend: download a calendar event with
+// an alarm on the follow-up date. iOS opens it in Calendar, and the phone
+// notifies you at that time.
+function icsEsc(s) {
+  return (s || '').toString().replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+}
+
+function leadEventLines(lead) {
+  const day = (lead.followUpDate || '').replace(/-/g, ''); // YYYYMMDD
+  const start = day + 'T090000'; // 9:00 AM local (floating time)
+  const end = day + 'T093000';
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+  const summary = 'Outreach follow-up: ' + (lead.company || 'lead');
+  const descParts = [];
+  if (lead.contactName) descParts.push('Contact: ' + lead.contactName + (lead.role ? ' (' + lead.role + ')' : ''));
+  if (lead.nextAction) descParts.push('Next action: ' + lead.nextAction);
+  if (lead.contactInfo) descParts.push(lead.contactInfo);
+  return [
+    'BEGIN:VEVENT',
+    'UID:' + lead.id + '@claw-outreach',
+    'DTSTAMP:' + stamp,
+    'DTSTART:' + start,
+    'DTEND:' + end,
+    'SUMMARY:' + icsEsc(summary),
+    'DESCRIPTION:' + icsEsc(descParts.join('\n')),
+    'BEGIN:VALARM',
+    'ACTION:DISPLAY',
+    'DESCRIPTION:' + icsEsc(summary),
+    'TRIGGER:PT0S',
+    'END:VALARM',
+    'END:VEVENT'
+  ];
+}
+
+function downloadICS(filename, eventBlocks) {
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//CLAW Outreach//EN', 'CALSCALE:GREGORIAN']
+    .concat([].concat.apply([], eventBlocks))
+    .concat(['END:VCALENDAR']);
+  const blob = new Blob([lines.join('\r\n')], { type: 'text/calendar' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function addLeadReminder(lead) {
+  if (!lead.followUpDate) {
+    alert('Set a “Follow-up date” for this lead first, then tap Add reminder.');
+    return;
+  }
+  const safe = (lead.company || 'lead').replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+  downloadICS('followup-' + safe + '.ics', [leadEventLines(lead)]);
+}
+
+function exportAllReminders() {
+  const dated = state.leads.filter(l => l.followUpDate);
+  if (!dated.length) {
+    alert('No leads have a follow-up date yet. Add follow-up dates, then export.');
+    return;
+  }
+  downloadICS('claw-followups.ics', dated.map(leadEventLines));
+}
+
 function leadCardHTML(item) {
   const open = state.openId === item.id;
   const color = STATUS_COLORS[item.status] || STATUS_COLORS['Not Started'];
@@ -224,6 +381,20 @@ function leadCardHTML(item) {
         '<div class="field"><label>Next action</label><textarea data-field="nextAction" data-autosize="1">' + esc(item.nextAction) + '</textarea></div>' +
         '<div class="field"><label>Notes</label><textarea data-field="notes" data-autosize="1">' + esc(item.notes) + '</textarea></div>' +
         '<span class="saved-flag">Saved</span>' +
+        '<div class="msg-section">' +
+          '<div class="msg-label">Outreach message</div>' +
+          '<div class="msg-toggle">' +
+            '<button data-action="msg-tpl" data-tpl="intro" class="' + (state.msgTemplate === 'intro' ? 'active' : '') + '">Intro</button>' +
+            '<button data-action="msg-tpl" data-tpl="followup" class="' + (state.msgTemplate === 'followup' ? 'active' : '') + '">Follow-up</button>' +
+          '</div>' +
+          '<textarea class="msg-preview" data-autosize="1" readonly>' + esc(fillTemplate(state.templates[state.msgTemplate], item)) + '</textarea>' +
+          '<div class="msg-actions">' +
+            '<button data-action="copy-msg">Copy message</button>' +
+            '<button data-action="add-reminder" class="secondary">&#128197; Add reminder</button>' +
+          '</div>' +
+          '<span class="copy-flag saved-flag">Copied to clipboard</span>' +
+          (item.followUpDate ? '' : '<div class="reminder-hint">Tip: set a follow-up date above to enable a calendar reminder.</div>') +
+        '</div>' +
         '<div class="card-actions">' +
           (confirming
             ? '<div class="confirm-row"><span>Delete this lead?</span><button data-action="delete-no">No</button><button class="danger" data-action="delete-yes">Yes, delete</button></div>'
@@ -274,16 +445,40 @@ function render() {
   document.getElementById('save-banner').classList.toggle('show', state.saveError);
 
   const content = document.getElementById('content');
-  const isLeads = state.tab === 'leads';
-  document.getElementById('tab-leads').classList.toggle('active', isLeads);
-  document.getElementById('tab-platforms').classList.toggle('active', !isLeads);
+  document.getElementById('tab-leads').classList.toggle('active', state.tab === 'leads');
+  document.getElementById('tab-platforms').classList.toggle('active', state.tab === 'platforms');
+  document.getElementById('tab-templates').classList.toggle('active', state.tab === 'templates');
+  document.getElementById('fab').style.display = state.tab === 'templates' ? 'none' : 'block';
 
-  const list = isLeads ? state.leads : state.platforms;
   const resetLabel = state.confirmReset
     ? '<span class="confirm-row" style="display:inline-flex"><span>Reset all?</span><button data-action="reset-no">No</button><button class="danger" data-action="reset-yes">Yes</button></span>'
     : '<button class="reset-link" data-action="reset-ask">Reset to defaults</button>';
 
-  let html = '<div class="section-label"><span>' + (isLeads ? list.length + ' lead' + (list.length === 1 ? '' : 's') : list.length + ' platform' + (list.length === 1 ? '' : 's')) + '</span>' + resetLabel + '</div>';
+  let html = '';
+
+  if (state.tab === 'templates') {
+    html += '<div class="section-label"><span>Message templates</span>' + resetLabel + '</div>';
+    html += '<p class="tpl-intro">Edit your outreach messages here. The placeholders below are filled in automatically when you copy a message from a lead.</p>';
+    html += '<div class="card open"><div class="card-body" style="border-top:none">' +
+      '<div class="field"><label>Intro message</label><textarea data-tpl-field="intro" data-autosize="1">' + esc(state.templates.intro) + '</textarea></div>' +
+      '<div class="field"><label>Follow-up message</label><textarea data-tpl-field="followup" data-autosize="1">' + esc(state.templates.followup) + '</textarea></div>' +
+      '<div class="tpl-help">Available placeholders:<br>' +
+        '<code>{firstName}</code> <code>{contactName}</code> <code>{company}</code> <code>{role}</code> <code>{source}</code> <code>{nextAction}</code></div>' +
+      '<span class="saved-flag">Saved</span>' +
+    '</div></div>';
+    content.innerHTML = html;
+    content.querySelectorAll('textarea[data-autosize]').forEach(t => { t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; });
+    return;
+  }
+
+  const isLeads = state.tab === 'leads';
+  const list = isLeads ? state.leads : state.platforms;
+
+  html += '<div class="section-label"><span>' + (isLeads ? list.length + ' lead' + (list.length === 1 ? '' : 's') : list.length + ' platform' + (list.length === 1 ? '' : 's')) + '</span>' + resetLabel + '</div>';
+
+  if (isLeads && state.leads.some(l => l.followUpDate)) {
+    html += '<div class="msg-actions" style="margin:0 2px 12px"><button data-action="export-all">&#128197; Add all follow-ups to calendar</button></div>';
+  }
 
   if (!list.length) {
     html += '<div class="empty">' + (isLeads ? 'No leads yet. Tap + to add one.' : 'No platforms yet. Tap + to add one.') + '</div>';
@@ -305,7 +500,7 @@ async function updateField(listKey, id, field, value) {
   item[field] = value;
   await saveList(listKey, list);
   if (!state.saveError) flashSaved(id);
-  if (field === 'status' || field === 'company' || field === 'contactName' || field === 'name' || field === 'role' || field === 'type' || field === 'url' || state.saveError) {
+  if (field === 'status' || field === 'company' || field === 'contactName' || field === 'name' || field === 'role' || field === 'type' || field === 'url' || field === 'followUpDate' || field === 'nextAction' || state.saveError) {
     render();
   }
 }
@@ -344,12 +539,45 @@ function attachListeners() {
       return;
     }
 
+    const msgTpl = e.target.closest('[data-action="msg-tpl"]');
+    if (msgTpl) { state.msgTemplate = msgTpl.dataset.tpl; render(); return; }
+
+    const copyMsg = e.target.closest('[data-action="copy-msg"]');
+    if (copyMsg) {
+      const id = copyMsg.closest('.card').dataset.id;
+      const lead = state.leads.find(x => x.id === id);
+      if (lead) {
+        const ok = await copyText(fillTemplate(state.templates[state.msgTemplate], lead));
+        if (ok) flashCopied(id);
+        else alert('Could not copy automatically — select the message text and copy it manually.');
+      }
+      return;
+    }
+
+    const addRem = e.target.closest('[data-action="add-reminder"]');
+    if (addRem) {
+      const id = addRem.closest('.card').dataset.id;
+      const lead = state.leads.find(x => x.id === id);
+      if (lead) addLeadReminder(lead);
+      return;
+    }
+
+    const exportAll = e.target.closest('[data-action="export-all"]');
+    if (exportAll) { exportAllReminders(); return; }
+
     const askReset = e.target.closest('[data-action="reset-ask"]');
     if (askReset) { state.confirmReset = true; render(); return; }
     const noReset = e.target.closest('[data-action="reset-no"]');
     if (noReset) { state.confirmReset = false; render(); return; }
     const yesReset = e.target.closest('[data-action="reset-yes"]');
     if (yesReset) {
+      if (state.tab === 'templates') {
+        state.templates = Object.assign({}, DEFAULT_TEMPLATES);
+        state.confirmReset = false;
+        await saveTemplates(state.templates);
+        render();
+        return;
+      }
       const key = state.tab === 'leads' ? 'leads' : 'platforms';
       const fallback = state.tab === 'leads' ? DEFAULT_LEADS : DEFAULT_PLATFORMS;
       state[key] = withIds(fallback);
@@ -370,12 +598,18 @@ function attachListeners() {
     }
   });
 
-  content.addEventListener('focusout', (e) => {
+  content.addEventListener('focusout', async (e) => {
     const el = e.target;
     if (el.matches('input[type="text"][data-field], textarea[data-field]')) {
       const id = el.closest('.card').dataset.id;
       const key = state.tab === 'leads' ? 'leads' : 'platforms';
       updateField(key, id, el.dataset.field, el.value);
+    } else if (el.matches('textarea[data-tpl-field]')) {
+      state.templates[el.dataset.tplField] = el.value;
+      await saveTemplates(state.templates);
+      const flag = content.querySelector('.saved-flag');
+      if (flag && !state.saveError) { flag.classList.add('show'); setTimeout(() => flag.classList.remove('show'), 900); }
+      if (state.saveError) render();
     }
   });
 
@@ -399,6 +633,9 @@ function attachListeners() {
   document.getElementById('tab-platforms').addEventListener('click', () => {
     state.tab = 'platforms'; state.openId = null; state.confirmDeleteId = null; state.confirmReset = false; render();
   });
+  document.getElementById('tab-templates').addEventListener('click', () => {
+    state.tab = 'templates'; state.openId = null; state.confirmDeleteId = null; state.confirmReset = false; render();
+  });
 
   document.getElementById('fab').addEventListener('click', async () => {
     const key = state.tab === 'leads' ? 'leads' : 'platforms';
@@ -418,6 +655,7 @@ function attachListeners() {
 async function init() {
   state.leads = await loadList('leads', DEFAULT_LEADS);
   state.platforms = await loadList('platforms', DEFAULT_PLATFORMS);
+  state.templates = await loadTemplates();
   attachListeners();
   render();
 }
