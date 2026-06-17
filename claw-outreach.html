@@ -101,6 +101,27 @@
   <button class="fab" id="fab">+</button>
 
 <script>
+// Persistence layer. The app reads/writes through window.storage with an
+// async get/set API. Provide a localStorage-backed implementation so data
+// persists in the browser. (Previously this object was never defined, so
+// every load fell back to defaults and every save silently failed.)
+if (!window.storage) {
+  window.storage = {
+    async get(key) {
+      try {
+        const value = localStorage.getItem(key);
+        return value === null ? null : { value };
+      } catch (e) {
+        throw new Error('storage unavailable');
+      }
+    },
+    async set(key, value) {
+      localStorage.setItem(key, value);
+      return true;
+    },
+  };
+}
+
 const STATUS_COLORS = {
   'Not Started': '#7a8290', 'Contacted': '#5b8fd1', 'Followed Up': '#d9a23b',
   'Responded': '#3aa89a', 'In Talks': '#9b7fd4', 'Won': '#4caf6e', 'Passed': '#a85d5d'
